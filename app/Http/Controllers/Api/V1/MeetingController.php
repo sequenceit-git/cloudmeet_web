@@ -7,6 +7,7 @@ use App\Exceptions\HostSessionInvalidException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Meeting\CreateMeetingRequest;
 use App\Http\Requests\Meeting\JoinMeetingRequest;
+use App\Http\Requests\Meeting\ScheduleMeetingRequest;
 use App\Http\Requests\Meeting\ValidateMeetingRequest;
 use App\Models\Meeting;
 use App\Models\MeetingHostSession;
@@ -14,17 +15,18 @@ use App\Models\MeetingParticipant;
 use App\Models\User;
 use App\Services\HostSessionService;
 use App\Services\LiveKitService;
+use App\Services\MeetingParticipantService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 class MeetingController extends Controller
 {
     public function __construct(
         protected LiveKitService $liveKitService,
-        protected HostSessionService $hostSessionService
+        protected HostSessionService $hostSessionService,
+        protected MeetingParticipantService $participantService
     ) {}
 
     /**
@@ -154,6 +156,13 @@ class MeetingController extends Controller
             ], 409);
         }
 
+        if (! $meeting || ! $hostSession) {
+            return $this->errorResponse('Failed to initialize meeting session', 500);
+        }
+
+        /** @var \App\Models\Meeting $meeting */
+        /** @var \App\Models\MeetingHostSession $hostSession */
+
         // Explicitly pre-create room on LiveKit SFU
         try {
             $this->liveKitService->createRoom($meeting->room_name, [
@@ -191,9 +200,12 @@ class MeetingController extends Controller
             'meeting' => $meetingData,
             'token' => $token,
             'livekit_token' => $token,
-            'host_session_token' => $hostSession->session_token,
+            'host_session_token' => $hostSession?->session_token,
             'room_name' => $meeting->room_name,
             'meeting_code' => $meeting->meeting_code,
+            'identity' => $identity,
+            'name' => $user->name,
+            'role' => 'host',
             'is_host' => true,
             'livekit_url' => $this->liveKitService->getHost(),
         ], 'Meeting created successfully', 201);
@@ -202,7 +214,7 @@ class MeetingController extends Controller
     /**
      * Schedule a future meeting.
      */
-    public function schedule(Request $request): JsonResponse
+    public function schedule(ScheduleMeetingRequest $request): JsonResponse
     {
         $user = $request->user();
 
@@ -215,16 +227,7 @@ class MeetingController extends Controller
             return $this->errorResponse('Guests are not permitted to schedule meetings. Please log in.', 403);
         }
 
-        $validated = $request->validate([
-            'title' => 'required|string|max:255',
-            'scheduled_at' => 'nullable|string',
-            'start_time' => 'nullable|string',
-            'date' => 'nullable|string',
-            'time' => 'nullable|string',
-            'passcode' => 'nullable|string|max:32',
-            'max_participants' => 'nullable|integer|min:2|max:100',
-            'waiting_room' => 'nullable|boolean',
-        ]);
+        $validated = $request->validated();
 
         $scheduledAt = null;
         if (! empty($validated['scheduled_at'])) {
@@ -255,10 +258,14 @@ class MeetingController extends Controller
         ]);
 
         // Explicitly pre-create room on LiveKit SFU
-        $this->liveKitService->createRoom($roomName, [
-            'empty_timeout' => 86400,
-            'max_participants' => $meeting->max_participants,
-        ]);
+        try {
+            $this->liveKitService->createRoom($roomName, [
+                'empty_timeout' => 86400,
+                'max_participants' => $meeting->max_participants,
+            ]);
+        } catch (\Throwable $e) {
+            // LiveKit SFU room might already exist or SFU offline in test
+        }
 
         $meetingData = $meeting->toArray();
         $meetingData['passcode'] = $meeting->passcode;
@@ -340,6 +347,9 @@ class MeetingController extends Controller
                 'ended_at' => null,
             ]);
         }
+
+        $meeting->loadCount('activeParticipants');
+        $meeting->load('host:id,name,avatar_url');
 
         $user = $request->user();
         $isHost = $user && ($user->id === $meeting->host_id);
@@ -644,19 +654,7 @@ class MeetingController extends Controller
             }
         }
 
-        $meeting->update([
-            'is_active' => false,
-            'is_host_online' => false,
-            'ended_at' => now(),
-        ]);
-
-        // Mark all active participants as departed
-        MeetingParticipant::where('meeting_id', $meeting->id)
-            ->whereNull('left_at')
-            ->update(['left_at' => now()]);
-
-        // Terminate room on LiveKit SFU
-        $this->liveKitService->deleteRoom($meeting->room_name);
+        $this->participantService->terminateMeeting($meeting);
 
         return $this->successResponse(null, 'Meeting ended successfully');
     }
@@ -699,21 +697,7 @@ class MeetingController extends Controller
                 }
             }
 
-            $meeting->update([
-                'is_active' => false,
-                'is_host_online' => false,
-                'ended_at' => now(),
-            ]);
-
-            MeetingParticipant::where('meeting_id', $meeting->id)
-                ->whereNull('left_at')
-                ->update(['left_at' => now()]);
-
-            try {
-                $this->liveKitService->deleteRoom($meeting->room_name);
-            } catch (\Throwable $e) {
-                // Ignore if room already closed
-            }
+            $this->participantService->terminateMeeting($meeting);
 
             return $this->successResponse(['meeting_ended' => true], 'Host left, meeting ended successfully');
         }
@@ -844,20 +828,9 @@ class MeetingController extends Controller
             if ($targetUserId === $meeting->host_id) {
                 return $this->errorResponse('Cannot remove the meeting host', 422);
             }
-
-            // Mark participant record as departed
-            MeetingParticipant::where('meeting_id', $meeting->id)
-                ->where('user_id', $targetUserId)
-                ->whereNull('left_at')
-                ->update(['left_at' => now()]);
         }
 
-        // Remove from LiveKit SFU
-        try {
-            $this->liveKitService->removeParticipant($meeting->room_name, $identity);
-        } catch (\Throwable $e) {
-            Log::warning('Failed to remove participant on LiveKit SFU: '.$e->getMessage());
-        }
+        $this->participantService->removeParticipant($meeting, $identity);
 
         return $this->successResponse(null, 'Participant removed successfully');
     }
@@ -886,6 +859,9 @@ class MeetingController extends Controller
             // Room may already be closed or not found on SFU
         }
 
+        // Clean up any lingering host session lock for this meeting
+        MeetingHostSession::where('meeting_id', $meeting->id)->delete();
+
         // Delete participant records and meeting record
         $meeting->participants()->delete();
         $meeting->delete();
@@ -898,36 +874,6 @@ class MeetingController extends Controller
      */
     protected function findMeetingByCode(string $rawInput): ?Meeting
     {
-        $rawInput = trim($rawInput);
-
-        // If it's a URL or contains slashes, extract the last segment of the path
-        if (str_contains($rawInput, '/')) {
-            $path = parse_url($rawInput, PHP_URL_PATH) ?? $rawInput;
-            $segments = array_values(array_filter(explode('/', $path)));
-            $rawInput = ! empty($segments) ? end($segments) : $rawInput;
-        }
-
-        // Strip query string or hashes if present
-        $rawInput = trim(explode('?', explode('#', $rawInput)[0])[0]);
-
-        // Clean digits
-        $cleanDigits = preg_replace('/\D/', '', $rawInput);
-
-        // 6-digit formatted code (XXX-XXX) or legacy 9-digit (XXX-XXX-XXX)
-        $formattedCode = (strlen($cleanDigits) === 6)
-            ? substr($cleanDigits, 0, 3).'-'.substr($cleanDigits, 3, 3)
-            : ((strlen($cleanDigits) === 9)
-                ? substr($cleanDigits, 0, 3).'-'.substr($cleanDigits, 3, 3).'-'.substr($cleanDigits, 6, 3)
-                : $rawInput);
-
-        return Meeting::where('meeting_code', $rawInput)
-            ->orWhere('meeting_code', $formattedCode)
-            ->orWhere('meeting_code', $cleanDigits)
-            ->orWhere('room_name', $rawInput)
-            ->orWhere('room_name', strtolower($rawInput))
-            ->when(is_numeric($rawInput), function ($query) use ($rawInput) {
-                $query->orWhere('id', (int) $rawInput);
-            })
-            ->first();
+        return $this->participantService->findMeetingByCode($rawInput);
     }
 }
