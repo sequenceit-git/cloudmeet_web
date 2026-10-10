@@ -5,7 +5,7 @@ FROM node:22-alpine AS frontend
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci || npm install
+RUN npm install --no-audit --no-fund
 
 COPY vite.config.js ./
 COPY resources/ ./resources/
@@ -30,29 +30,16 @@ RUN composer dump-autoload --optimize --no-dev
 # ==========================================
 FROM php:8.3-fpm-alpine
 
-# Install system dependencies & build tools
+# Install fast PHP extension installer (precompiled binaries without heavy GCC/G++ compilation)
+COPY --from=mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
+
+# Install system dependencies & PHP extensions cleanly
 RUN apk add --no-cache \
     nginx \
     supervisor \
     curl \
     bash \
-    freetype \
-    libpng \
-    libjpeg-turbo \
-    libzip \
-    icu-libs \
-    oniguruma \
-    $PHPIZE_DEPS \
-    freetype-dev \
-    libpng-dev \
-    libjpeg-turbo-dev \
-    libzip-dev \
-    icu-dev \
-    oniguruma-dev \
-    libxml2-dev \
-    linux-headers \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j$(nproc) \
+    && install-php-extensions \
         pdo_mysql \
         mbstring \
         exif \
@@ -63,10 +50,7 @@ RUN apk add --no-cache \
         intl \
         opcache \
         sockets \
-    && pecl install redis \
-    && docker-php-ext-enable redis \
-    && apk del --no-cache $PHPIZE_DEPS freetype-dev libpng-dev libjpeg-turbo-dev libzip-dev icu-dev oniguruma-dev libxml2-dev linux-headers \
-    && rm -rf /tmp/pear /var/cache/apk/*
+        redis
 
 # Copy configuration files
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
@@ -81,7 +65,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /var/www/html
 
-# Copy application files
+# Copy application files and artifacts from build stages
 COPY . /var/www/html
 COPY --from=composer_build /app/vendor /var/www/html/vendor
 COPY --from=frontend /app/public/build /var/www/html/public/build

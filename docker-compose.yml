@@ -6,6 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: cloudmeet-app:latest
     container_name: cloudmeet-app
     restart: unless-stopped
     env_file:
@@ -45,9 +46,7 @@ services:
   # Queue Worker (Processes Background Jobs)
   # -------------------------------------------------------------
   queue:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: cloudmeet-app:latest
     container_name: cloudmeet-queue
     restart: unless-stopped
     command: ["php", "artisan", "queue:work", "--tries=3", "--timeout=90"]
@@ -58,6 +57,8 @@ services:
     networks:
       - cloudmeet-internal
     depends_on:
+      app:
+        condition: service_started
       mysql:
         condition: service_healthy
       redis:
@@ -67,9 +68,7 @@ services:
   # Laravel Task Scheduler (Cron)
   # -------------------------------------------------------------
   scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: cloudmeet-app:latest
     container_name: cloudmeet-scheduler
     restart: unless-stopped
     command: ["php", "artisan", "schedule:work"]
@@ -80,6 +79,8 @@ services:
     networks:
       - cloudmeet-internal
     depends_on:
+      app:
+        condition: service_started
       mysql:
         condition: service_healthy
       redis:
