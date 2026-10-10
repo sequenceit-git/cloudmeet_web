@@ -112,10 +112,10 @@ services:
     networks:
       - cloudmeet-internal
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
       interval: 3s
       timeout: 2s
-      retries: 10
+      retries: 5
       start_period: 3s
 
   # -------------------------------------------------------------
@@ -150,10 +150,8 @@ services:
     ports:
       # WebRTC TCP fallback port
       - "7881:7881"
-      # WebRTC primary UDP media port
+      # WebRTC primary UDP media port (all audio/video streams multiplexed here)
       - "7882:7882/udp"
-      # WebRTC UDP media port range
-      - "50000-60000:50000-60000/udp"
       # Built-in TURN server UDP port
       - "3478:3478/udp"
     networks:
