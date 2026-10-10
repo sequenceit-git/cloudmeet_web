@@ -1,5 +1,4 @@
 #!/bin/sh
-set -e
 
 # Ensure storage and bootstrap/cache directories exist
 mkdir -p /var/www/html/storage/framework/cache/data \
@@ -7,15 +6,24 @@ mkdir -p /var/www/html/storage/framework/cache/data \
          /var/www/html/storage/framework/views \
          /var/www/html/storage/app/public \
          /var/www/html/storage/logs \
-         /var/www/html/bootstrap/cache
+         /var/www/html/bootstrap/cache \
+         /run/nginx \
+         /run/php \
+         /var/log/nginx
 
 # Fix permissions
-chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
-chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache /run/nginx /run/php /var/log/nginx 2>/dev/null || true
+chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
+
+# Generate APP_KEY if not present
+if [ -z "$APP_KEY" ]; then
+    echo "APP_KEY is empty. Generating new application encryption key..."
+    php artisan key:generate --force || true
+fi
 
 # Create storage symlink if not already linked
 if [ ! -L /var/www/html/public/storage ]; then
-    php artisan storage:link --force || true
+    php artisan storage:link --force 2>/dev/null || true
 fi
 
 # Run database migrations if RUN_MIGRATIONS is set to true
