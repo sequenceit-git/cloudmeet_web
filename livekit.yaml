@@ -1,0 +1,64 @@
+# LiveKit Server Configuration for Cloudmeet / Cloud News
+# Optimized for Web (Browser WebRTC) and Mobile (React Native / iOS / Android)
+
+# Signaling Server (HTTP / WebSocket)
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+
+# WebRTC & Media Engine Configuration
+rtc:
+  # Primary WebRTC UDP Media Port
+  udp_port: 7882
+
+  # WebRTC TCP Fallback Port (essential for mobile on restrictive networks / firewalls)
+  tcp_port: 7881
+
+  # UDP port range for media streams
+  port_range_start: 50000
+  port_range_end: 60000
+
+  # IP Resolution:
+  # Set use_external_ip: true for Cloud / Production VPS deployment
+  use_external_ip: true
+
+  # Public STUN servers for NAT traversal
+  stun_servers:
+    - "stun.l.google.com:19302"
+    - "stun1.l.google.com:19302"
+    - "stun.cloudflare.com:3478"
+
+# Built-in TURN server (helps mobile devices behind symmetric NATs / cellular networks)
+turn:
+  enabled: true
+  udp_port: 3478
+
+# Room & Media Optimization for Mobile & Web
+room:
+  auto_create: true
+  empty_timeout: 300 # 5 minutes before idle empty rooms are cleared
+  max_participants: 100
+  enable_dynacast: true # Dynamically pauses unused video streams to save mobile battery & bandwidth
+  enable_simulcast: true # Multi-resolution streaming (High-res for Web, adaptive low-res for Mobile)
+
+# Media & Codec Settings
+audio:
+  smooth_intervals: 2
+
+video:
+  dynacast_pause_delay: 5s
+
+# Webhooks (Sends room and participant events to Laravel backend)
+webhook:
+  api_key: "devkey"
+  urls:
+    - "http://app/api/v1/webhooks/livekit"
+
+# Authentication API Keys (matches backend & mobile configs)
+keys:
+  devkey: "secret_token_for_cloudnews_2026_32chars"
+
+# Server Logging
+logging:
+  level: info
+  pion_level: warn

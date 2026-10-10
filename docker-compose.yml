@@ -1,0 +1,170 @@
+services:
+  # -------------------------------------------------------------
+  # Web & API Application (Nginx + PHP 8.3-FPM + Supervisor)
+  # -------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudmeet-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - RUN_MIGRATIONS=${RUN_MIGRATIONS:-true}
+    volumes:
+      - storage_data:/var/www/html/storage
+    networks:
+      - traefik
+      - cloudmeet-internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      
+      # HTTPS Router (cloudnewsmeet.com, www.cloudnewsmeet.com, api.cloudnewsmeet.com)
+      - "traefik.http.routers.cloudmeet.rule=Host(`${APP_DOMAIN:-cloudnewsmeet.com}`) || Host(`www.${APP_DOMAIN:-cloudnewsmeet.com}`) || Host(`api.${APP_DOMAIN:-cloudnewsmeet.com}`)"
+      - "traefik.http.routers.cloudmeet.entrypoints=websecure"
+      - "traefik.http.routers.cloudmeet.tls=true"
+      - "traefik.http.routers.cloudmeet.tls.certresolver=letsencrypt"
+      - "traefik.http.services.cloudmeet.loadbalancer.server.port=80"
+      
+      # HTTP to HTTPS Redirect
+      - "traefik.http.routers.cloudmeet-http.rule=Host(`${APP_DOMAIN:-cloudnewsmeet.com}`) || Host(`www.${APP_DOMAIN:-cloudnewsmeet.com}`) || Host(`api.${APP_DOMAIN:-cloudnewsmeet.com}`)"
+      - "traefik.http.routers.cloudmeet-http.entrypoints=web"
+      - "traefik.http.routers.cloudmeet-http.middlewares=cloudmeet-redirect-https"
+      - "traefik.http.middlewares.cloudmeet-redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.cloudmeet-redirect-https.redirectscheme.permanent=true"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # -------------------------------------------------------------
+  # Queue Worker (Processes Background Jobs)
+  # -------------------------------------------------------------
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudmeet-queue
+    restart: unless-stopped
+    command: ["php", "artisan", "queue:work", "--tries=3", "--timeout=90"]
+    env_file:
+      - .env
+    volumes:
+      - storage_data:/var/www/html/storage
+    networks:
+      - cloudmeet-internal
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # -------------------------------------------------------------
+  # Laravel Task Scheduler (Cron)
+  # -------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudmeet-scheduler
+    restart: unless-stopped
+    command: ["php", "artisan", "schedule:work"]
+    env_file:
+      - .env
+    volumes:
+      - storage_data:/var/www/html/storage
+    networks:
+      - cloudmeet-internal
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # -------------------------------------------------------------
+  # MySQL Database
+  # -------------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: cloudmeet-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-cloudmeet}
+      MYSQL_USER: ${DB_USERNAME:-cloudmeet_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-StrongPass@2026!}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-RootPass@2026!}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - cloudmeet-internal
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # -------------------------------------------------------------
+  # Redis (Cache, Sessions, Queues)
+  # -------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: cloudmeet-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - cloudmeet-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # -------------------------------------------------------------
+  # LiveKit SFU Server (WebRTC Video & Audio Engine)
+  # -------------------------------------------------------------
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: cloudmeet-livekit
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      # WebRTC TCP fallback port
+      - "7881:7881"
+      # WebRTC primary UDP media port
+      - "7882:7882/udp"
+      # WebRTC UDP media port range
+      - "50000-60000:50000-60000/udp"
+      # Built-in TURN server UDP port
+      - "3478:3478/udp"
+    networks:
+      - traefik
+      - cloudmeet-internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+
+      # LiveKit WebSocket / HTTPS Router (e.g. livekit.cloudnewsmeet.com)
+      - "traefik.http.routers.livekit.rule=Host(`livekit.${APP_DOMAIN:-cloudnewsmeet.com}`)"
+      - "traefik.http.routers.livekit.entrypoints=websecure"
+      - "traefik.http.routers.livekit.tls=true"
+      - "traefik.http.routers.livekit.tls.certresolver=letsencrypt"
+      - "traefik.http.services.livekit.loadbalancer.server.port=7880"
+
+networks:
+  traefik:
+    external: true
+  cloudmeet-internal:
+    driver: bridge
+
+volumes:
+  storage_data:
+  mysql_data:
+  redis_data:
