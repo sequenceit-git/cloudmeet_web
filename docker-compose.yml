@@ -9,6 +9,7 @@ services:
     image: cloudmeet-app:latest
     container_name: cloudmeet-app
     restart: unless-stopped
+    mem_limit: 768m
     env_file:
       - .env
     environment:
@@ -49,6 +50,7 @@ services:
     image: cloudmeet-app:latest
     container_name: cloudmeet-queue
     restart: unless-stopped
+    mem_limit: 384m
     command: ["php", "artisan", "queue:work", "--tries=3", "--timeout=90"]
     env_file:
       - .env
@@ -71,6 +73,7 @@ services:
     image: cloudmeet-app:latest
     container_name: cloudmeet-scheduler
     restart: unless-stopped
+    mem_limit: 256m
     command: ["php", "artisan", "schedule:work"]
     env_file:
       - .env
@@ -87,12 +90,18 @@ services:
         condition: service_healthy
 
   # -------------------------------------------------------------
-  # MySQL Database
+  # MySQL Database (Optimized Buffer Pool & Memory Limits)
   # -------------------------------------------------------------
   mysql:
     image: mysql:8.0
     container_name: cloudmeet-mysql
     restart: unless-stopped
+    mem_limit: 768m
+    command:
+      - --innodb-buffer-pool-size=256M
+      - --innodb-log-buffer-size=16M
+      - --performance-schema=OFF
+      - --max-connections=80
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:-cloudmeet}
       MYSQL_USER: ${DB_USERNAME:-cloudmeet_user}
@@ -116,6 +125,7 @@ services:
     image: redis:7-alpine
     container_name: cloudmeet-redis
     restart: unless-stopped
+    mem_limit: 256m
     volumes:
       - redis_data:/data
     networks:
@@ -133,6 +143,7 @@ services:
     image: livekit/livekit-server:latest
     container_name: cloudmeet-livekit
     restart: unless-stopped
+    mem_limit: 1024m
     command: ["--config", "/etc/livekit.yaml"]
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
